@@ -11,7 +11,7 @@ import math
 import gdown
 from collections import defaultdict
 
-gdown.download('https://drive.google.com/file/d/1Lc-ZuvS-lWQTTWsteMfDYWCv3rPDTVbx/view?usp=drive_link', 'weights.pkl', quiet=False)
+gdown.download('https://drive.google.com/uc?id=1Lc-ZuvS-lWQTTWsteMfDYWCv3rPDTVbx', 'weights.pkl', quiet=False)
 
 class Game2048Env(gym.Env):
     def __init__(self):
