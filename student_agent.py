@@ -8,7 +8,10 @@ import matplotlib.pyplot as plt
 import copy
 import random
 import math
+import gdown
+from collections import defaultdict
 
+gdown.download('https://drive.google.com/file/d/1Lc-ZuvS-lWQTTWsteMfDYWCv3rPDTVbx/view?usp=drive_link', 'weights.pkl', quiet=False)
 
 class Game2048Env(gym.Env):
     def __init__(self):
@@ -231,9 +234,139 @@ class Game2048Env(gym.Env):
         # If the simulated board is different from the current board, the move is legal
         return not np.array_equal(self.board, temp_board)
 
+patterns = [
+    [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+    [(0, 1), (0, 2), (1, 1), (1, 2), (2, 1), (3, 1)],
+    [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1)],
+    [(0, 0), (0, 1), (1, 1), (1, 2), (1, 3), (2, 2)],
+    [(0, 0), (0, 1), (0, 2), (1, 1), (2, 1), (2, 2)],
+    [(0, 0), (0, 1), (1, 1), (2, 1), (3, 1), (3, 2)],
+    [(0, 1), (0, 2), (1, 1), (2, 1), (3, 1), (2, 0)],
+    [(0, 0), (0, 1), (0, 2), (1, 2), (2, 2), (1, 0)]
+]
+
+class NTupleApproximator:
+    def __init__(self, board_size, patterns):
+        self.base = 16
+        self.bases = [self.base ** i for i in range(16)]
+        self.board_size = board_size
+        self.patterns = patterns
+        self.weights = [defaultdict(float) for _ in patterns]
+        self.symmetry_patterns = []
+        for pattern in self.patterns:
+            syms = self.generate_symmetries(pattern)
+            self.symmetry_patterns.append(syms)
+
+    def generate_symmetries(self, pattern):
+        symmetries = []
+        n = self.board_size - 1
+        # Original pattern
+        symmetries.append(pattern)
+        # Rotate 90° clockwise: (x, y) -> (y, n-x)
+        rot90 = [(y, n-x) for x, y in pattern]
+        symmetries.append(rot90)
+        # Rotate 180°: (x, y) -> (n-x, n-y)
+        rot180 = [(n-x, n-y) for x, y in pattern]
+        symmetries.append(rot180)
+        # Rotate 270° clockwise: (x, y) -> (n-y, x)
+        rot270 = [(n-y, x) for x, y in pattern]
+        symmetries.append(rot270)
+        # Horizontal reflection: (x, y) -> (x, n-y)
+        h_reflect = [(x, n-y) for x, y in pattern]
+        symmetries.append(h_reflect)
+        # Vertical reflection: (x, y) -> (n-x, y)
+        v_reflect = [(n-x, y) for x, y in pattern]
+        symmetries.append(v_reflect)
+        # Diagonal reflection (top-left to bottom-right): (x, y) -> (y, x)
+        diag1_reflect = [(y, x) for x, y in pattern]
+        symmetries.append(diag1_reflect)
+        # Diagonal reflection (top-right to bottom-left): (x, y) -> (n-y, n-x)
+        diag2_reflect = [(n-y, n-x) for x, y in pattern]
+        symmetries.append(diag2_reflect)
+        # Remove duplicates by converting to tuples of tuples and using a set
+        unique_symmetries = []
+        unique_set = set()
+        for sym in symmetries:
+            # Sort each pattern to ensure consistent ordering
+            sorted_sym = sorted(sym)
+            tuple_sym = tuple(sorted_sym)
+            if tuple_sym not in unique_set:
+                unique_set.add(tuple_sym)
+                unique_symmetries.append(sorted_sym)
+        return unique_symmetries
+
+    def tile_to_index(self, tile):
+        if tile == 0:
+            return 0
+        else:
+            return int(math.log(tile, 2))
+
+    def get_feature(self, board, coords):
+        return tuple([self.tile_to_index(board[x][y]) for x, y in coords])
+
+    def compute_index(self, values):
+        index = 0
+        for i, val in enumerate(reversed(values)):
+            index += val * self.bases[i]
+        return index
+
+    def value(self, board):
+        total = []
+        for i in range(len(self.patterns)):
+            # LUT for this pattern
+            LUT = self.weights[i]
+            for sym in self.symmetry_patterns[i]:
+                tup = self.get_feature(board, sym)
+                idx = self.compute_index(tup)
+                total.append(LUT[idx])
+                # total.append(LUT[tup])
+        return np.mean(total)
+
+    def update(self, board, delta, alpha):
+        # For each pattern, update all symmetric features equally.
+        for pattern_index, syms in enumerate(self.symmetry_patterns):
+            LUT = self.weights[pattern_index]
+            for sym in syms:
+                feature = self.get_feature(board, sym)
+                idx = self.compute_index(feature)
+                LUT[idx] += alpha * delta
+                # LUT[feature] += alpha * delta
+
+def peek_afterstate(env, action):
+    temp_env = copy.deepcopy(env)
+    temp_env.score = 0
+    if action == 0:
+        moved = temp_env.move_up()
+    elif action == 1:
+        moved = temp_env.move_down()
+    elif action == 2:
+        moved = temp_env.move_left()
+    elif action == 3:
+        moved = temp_env.move_right()
+
+    afterstate = np.copy(temp_env.board)
+    reward = temp_env.score
+    return afterstate, reward
+
+approximator = NTupleApproximator(4, patterns)
+
+with open('weights.pkl', 'rb') as f:
+    approximator.weights = pickle.load(f)
+    
 def get_action(state, score):
     env = Game2048Env()
-    return random.choice([0, 1, 2, 3]) # Choose a random action
+    env.board = state
+    legal_moves = [a for a in range(4) if env.is_move_legal(a)]
+    best_value = - float('inf')
+    best_action = None
+    for move in legal_moves:
+        afterstate, reward = peek_afterstate(env, move)
+        value = 0.99 * approximator.value(afterstate) + reward
+        if value > best_value:
+            best_value = value
+            best_action = move
+    action = best_action
+    return action # Choose a random action
     
     # You can submit this random agent to evaluate the performance of a purely random strategy.
 
