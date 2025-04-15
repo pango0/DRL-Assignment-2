@@ -466,7 +466,7 @@ class TD_MCTS:
         else:
             action = random.choice(node.untried_actions)
             sim_env = self.create_env_from_state(node.state, node.score)
-            afterstate, reward = sim_env.peek_afterstate(action)
+            afterstate, reward = peek_afterstate(sim_env, action)
             new_state = afterstate
             new_score = sim_env.score + reward
             child_node = TD_MCTS_Node(new_state, new_score, parent=node, action=action,
@@ -499,24 +499,13 @@ class TD_MCTS:
 
         # One-step lookahead: for remaining legal moves, estimate value 
         legal_moves = [a for a in range(4) if sim_env.is_move_legal(a)]
-        if legal_moves:
-            estimates = []
-            for a in legal_moves:
-                tmp_env = copy.deepcopy(sim_env)
-                score_before = tmp_env.score
-                if a == 0:
-                    tmp_env.move_up()
-                elif a == 1:
-                    tmp_env.move_down()
-                elif a == 2:
-                    tmp_env.move_left()
-                elif a == 3:
-                    tmp_env.move_right()
-                immediate_reward = tmp_env.score - score_before
-                value_estimate = immediate_reward + self.gamma * self.approximator.value(tmp_env.board)
-                estimates.append(value_estimate)
-            total_reward += discount * max(estimates)
-        return total_reward
+        best_reward = float('-inf')
+        for move in legal_moves:
+            afterstate, reward = peek_afterstate(sim_env, move)
+            value = self.value_approximator.value(afterstate) + reward
+            if value > best_reward:
+                best_reward = value
+        return best_reward
 
     def backpropagate(self, node, reward):
         discount = 1.0
