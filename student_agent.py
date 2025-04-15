@@ -11,7 +11,7 @@ import math
 import gdown
 from collections import defaultdict
 
-gdown.download('https://drive.google.com/uc?id=1Lc-ZuvS-lWQTTWsteMfDYWCv3rPDTVbx', 'weights.pkl', quiet=False)
+gdown.download('https://drive.google.com/uc?id=1RDDwjOZ9FTMQPYVRIIPDNNNRL60Kdb2b', 'weights.pkl', quiet=False)
 
 class Game2048Env(gym.Env):
     def __init__(self):
@@ -348,25 +348,232 @@ def peek_afterstate(env, action):
     reward = temp_env.score
     return afterstate, reward
 
+import copy
+import random
+import math
+import numpy as np
+
+# Example environment import; ensure your real environment is in scope
+# from your_game_env import Game2048Env
+
+class TD_MCTS_Node:
+    def __init__(self, state, score, parent=None, action=None, is_random_node=False, exploration_constant=1.41):
+        """
+        state: current board state (numpy array)
+        score: cumulative score
+        parent: parent node (None for root)
+        action: action taken from parent to this node (if applicable)
+        is_random_node: if True, untried_actions will be random tile placements; 
+                        if False, they will be player moves.
+        exploration_constant: constant c for UCT calculation
+        """
+        self.state = state
+        self.score = score
+        self.parent = parent
+        self.action = action
+        self.is_random_node = is_random_node
+        self.c = exploration_constant
+        self.children = {}
+        self.visits = 0
+        self.total_value = 0.0
+        self.untried_actions = []
+        
+        if self.is_random_node:
+            self.untried_actions = self.get_possible_tile_placements()
+        else:
+            self.untried_actions = [a for a in range(4) if self.is_move_legal(a)]
+
+    def get_possible_tile_placements(self):
+        empty_cells = list(zip(*np.where(self.state == 0)))
+        placements = []
+        for cell in empty_cells:
+            placements.append((cell, 2))  # 90% chance
+            placements.append((cell, 4))  # 10% chance
+        return placements
+
+    def is_move_legal(self, action):
+        temp_env = Game2048Env()
+        temp_env.board = self.state.copy()
+        temp_env.score = self.score
+        return temp_env.is_move_legal(action)
+
+    def fully_expanded(self):
+        return len(self.untried_actions) == 0
+
+    def get_uct_value(self, parent_visits):
+        """Compute the UCT value for this node."""
+        if self.visits == 0:
+            return float('inf')
+        average_value = self.total_value / self.visits
+        normalized_value = average_value/25000  # normalization factor (adjust as needed)
+        exploration_term = self.c * math.sqrt(math.log(parent_visits) / self.visits)
+        return normalized_value + exploration_term
+
+class TD_MCTS:
+    def __init__(self, env, approximator, iterations=500, exploration_constant=1.41, rollout_depth=10, gamma=0.99):
+        self.env = env
+        self.approximator = approximator
+        self.iterations = iterations
+        self.c = exploration_constant
+        self.rollout_depth = rollout_depth
+        self.gamma = gamma
+
+    def create_env_from_state(self, state, score):
+        new_env = copy.deepcopy(self.env)
+        new_env.board = state.copy()
+        new_env.score = score
+        return new_env
+
+    def select_child(self, node):
+        # If the node is a random node, select based on weighted tile placements.
+        if node.is_random_node:
+            placements = list(node.children.keys())
+            weights = [0.9 if placement[1] == 2 else 0.1 for placement in placements]
+            selected = random.choices(placements, weights=weights)[0]
+            return node.children[selected]
+        else:
+            best_child = None
+            best_value = -float('inf')
+            for child in node.children.values():
+                uct_value = child.get_uct_value(node.visits)
+                if uct_value > best_value:
+                    best_value = uct_value
+                    best_child = child
+            return best_child
+
+    def expand(self, node):
+        if node.is_random_node:
+            # Expansion for random node: choose a tile placement.
+            untried = node.untried_actions[:]
+            weights = [0.9 if tile[1] == 2 else 0.1 for tile in untried]
+            selected_tile = random.choices(untried, weights=weights)[0]
+            
+            (x, y), tile_value = selected_tile
+            new_state = node.state.copy()
+            new_state[x, y] = tile_value
+            
+            # Check for duplicate child states
+            if any(np.array_equal(child.state, new_state) for child in node.children.values()):
+                node.untried_actions.remove(selected_tile)
+                # Optionally try another tile or return here.
+            new_score = node.score
+            # After random tile placement, node becomes an action node (is_random_node = False).
+            child_node = TD_MCTS_Node(new_state, new_score, parent=node, action=None,
+                                      is_random_node=False, exploration_constant=self.c)
+            node.children[selected_tile] = child_node
+            node.untried_actions.remove(selected_tile)
+            return child_node
+        else:
+            action = random.choice(node.untried_actions)
+            sim_env = self.create_env_from_state(node.state, node.score)
+            afterstate, reward = sim_env.peek_afterstate(action)
+            new_state = afterstate
+            new_score = sim_env.score + reward
+            child_node = TD_MCTS_Node(new_state, new_score, parent=node, action=action,
+                                      is_random_node=True, exploration_constant=self.c)
+            child_node.reward = reward  # store immediate reward if desired
+            node.children[action] = child_node
+            node.untried_actions.remove(action)
+            return child_node
+
+    def rollout(self, node, depth):
+        """Perform a rollout and return a discounted cumulative reward estimate."""
+        total_reward = 0
+        discount = 1.0
+        sim_env = self.create_env_from_state(node.state, node.score)
+
+        for _ in range(depth):
+            if sim_env.is_game_over():
+                break
+            legal_moves = [a for a in range(4) if sim_env.is_move_legal(a)]
+            if not legal_moves:
+                break
+            action = random.choice(legal_moves)
+            old_score = sim_env.score
+            _, _, done, _ = sim_env.step(action)
+            step_reward = sim_env.score - old_score
+            total_reward += discount * step_reward
+            discount *= self.gamma
+            if done:
+                break
+
+        # One-step lookahead: for remaining legal moves, estimate value 
+        legal_moves = [a for a in range(4) if sim_env.is_move_legal(a)]
+        if legal_moves:
+            estimates = []
+            for a in legal_moves:
+                tmp_env = copy.deepcopy(sim_env)
+                score_before = tmp_env.score
+                if a == 0:
+                    tmp_env.move_up()
+                elif a == 1:
+                    tmp_env.move_down()
+                elif a == 2:
+                    tmp_env.move_left()
+                elif a == 3:
+                    tmp_env.move_right()
+                immediate_reward = tmp_env.score - score_before
+                value_estimate = immediate_reward + self.gamma * self.approximator.value(tmp_env.board)
+                estimates.append(value_estimate)
+            total_reward += discount * max(estimates)
+        return total_reward
+
+    def backpropagate(self, node, reward):
+        discount = 1.0
+        # Propagate back up the tree with a decaying discount multiplier.
+        while node is not None:
+            node.visits += 1
+            node.total_value += discount * reward
+            if hasattr(node, 'reward'):
+                reward += node.reward
+            discount *= self.gamma
+            node = node.parent
+
+    def run_simulation(self, root):
+        node = root
+        # Selection: descend until a node is not fully expanded.
+        while node.fully_expanded() and node.children:
+            node = self.select_child(node)
+        # Expansion: if node is not fully expanded, then expand it.
+        if not node.fully_expanded():
+            node = self.expand(node)
+        # Rollout: if the node is a player move (non-random), you perform rollout;
+        # for random nodes you might use the approximator directly.
+        if node.is_random_node:
+            rollout_value = self.approximator.value(node.state)
+        else:
+            rollout_value = self.rollout(node, self.rollout_depth)
+        # Backpropagation: update all nodes along the simulation path.
+        self.backpropagate(node, rollout_value)
+
+    def best_action_distribution(self, root):
+        total_visits = sum(child.visits for child in root.children.values())
+        distribution = np.zeros(4)
+        best_visits = -1
+        best_action = None
+        for action, child in root.children.items():
+            distribution[action] = child.visits / total_visits if total_visits > 0 else 0
+            if child.visits > best_visits:
+                best_visits = child.visits
+                best_action = action
+        return best_action, distribution
+
+
 approximator = NTupleApproximator(4, patterns)
 
 with open('weights.pkl', 'rb') as f:
     approximator.weights = pickle.load(f)
-    
+
 def get_action(state, score):
     env = Game2048Env()
     env.board = state
-    legal_moves = [a for a in range(4) if env.is_move_legal(a)]
-    best_value = - float('inf')
-    best_action = None
-    for move in legal_moves:
-        afterstate, reward = peek_afterstate(env, move)
-        value = 0.99 * approximator.value(afterstate) + reward
-        if value > best_value:
-            best_value = value
-            best_action = move
-    action = best_action
-    return action # Choose a random action
+    env.score = score
+    td_mcts = TD_MCTS(env, approximator, iterations=100, exploration_constant=1.41, rollout_depth=0, gamma=0.99)
+    root = TD_MCTS_Node(state, env.score)
+    for _ in range(td_mcts.iterations):
+        td_mcts.run_simulation(root)
+    best_act, _ = td_mcts.best_action_distribution(root)
+    return best_act # Choose a random action
     
     # You can submit this random agent to evaluate the performance of a purely random strategy.
 
