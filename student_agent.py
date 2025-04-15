@@ -553,12 +553,11 @@ approximator = NTupleApproximator(4, patterns)
 with open('weights.pkl', 'rb') as f:
     approximator.weights = pickle.load(f)
 
+td_mcts = TD_MCTS(Game2048Env(), approximator, iterations=100, exploration_constant=1.41, rollout_depth=0, gamma=0.99)
+
 def get_action(state, score):
-    env = Game2048Env()
-    env.board = state
-    env.score = score
-    td_mcts = TD_MCTS(env, approximator, iterations=100, exploration_constant=1.41, rollout_depth=0, gamma=0.99)
-    root = TD_MCTS_Node(state, env.score)
+    global approximator, td_mcts
+    root = TD_MCTS_Node(state, score)
     for _ in range(td_mcts.iterations):
         td_mcts.run_simulation(root)
     best_act, _ = td_mcts.best_action_distribution(root)
