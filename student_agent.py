@@ -11,7 +11,7 @@ import math
 import gdown
 from collections import defaultdict
 
-gdown.download('https://drive.google.com/uc?id=1RDDwjOZ9FTMQPYVRIIPDNNNRL60Kdb2b', 'weights.pkl', quiet=False)
+gdown.download('https://drive.google.com/uc?id=1Lc-ZuvS-lWQTTWsteMfDYWCv3rPDTVbx', 'weights.pkl', quiet=False)
 
 class Game2048Env(gym.Env):
     def __init__(self):
@@ -575,6 +575,5 @@ def get_action(state, score):
     best_act, _ = td_mcts.best_action_distribution(root)
     return best_act # Choose a random action
     
-    # You can submit this random agent to evaluate the performance of a purely random strategy.
 
 
