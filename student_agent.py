@@ -502,7 +502,7 @@ class TD_MCTS:
         best_reward = float('-inf')
         for move in legal_moves:
             afterstate, reward = peek_afterstate(sim_env, move)
-            value = self.value_approximator.value(afterstate) + reward
+            value = self.approximator.value(afterstate) + reward
             if value > best_reward:
                 best_reward = value
         return best_reward
