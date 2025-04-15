@@ -428,10 +428,14 @@ class TD_MCTS:
         # If the node is a random node, select based on weighted tile placements.
         if node.is_random_node:
             placements = list(node.children.keys())
+            if not placements:  # If no children, return None
+                return None
             weights = [0.9 if placement[1] == 2 else 0.1 for placement in placements]
             selected = random.choices(placements, weights=weights)[0]
             return node.children[selected]
         else:
+            if not node.children:  # If no children, return None
+                return None
             best_child = None
             best_value = -float('inf')
             for child in node.children.values():
@@ -520,9 +524,15 @@ class TD_MCTS:
 
     def run_simulation(self, root):
         node = root
+        
         # Selection: descend until a node is not fully expanded.
-        while node.fully_expanded() and node.children:
+        while node is not None and node.fully_expanded() and node.children:
             node = self.select_child(node)
+        
+        # If node is None, return early
+        if node is None:
+            return
+            
         # Expansion: if node is not fully expanded, then expand it.
         if not node.fully_expanded():
             node = self.expand(node)
